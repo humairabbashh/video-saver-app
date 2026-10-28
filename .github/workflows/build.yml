@@ -1,0 +1,53 @@
+name: Build APK
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - name: Install packages
+        run: npm install
+      - name: Create Android project
+        run: |
+          npx cap add android
+          npx cap sync android
+      - name: Add AdMob App ID (test) + storage permission
+        run: |
+          python3 - <<'EOF'
+          man='android/app/src/main/AndroidManifest.xml'
+          s=open(man).read()
+          if 'com.google.android.gms.ads.APPLICATION_ID' not in s:
+              s=s.replace('</application>','    <meta-data android:name="com.google.android.gms.ads.APPLICATION_ID" android:value="@string/admob_app_id" />\n    </application>',1)
+          if 'WRITE_EXTERNAL_STORAGE' not in s:
+              ins='    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />\n'
+              if '<uses-permission android:name="android.permission.INTERNET" />' in s:
+                  s=s.replace('<uses-permission android:name="android.permission.INTERNET" />','<uses-permission android:name="android.permission.INTERNET" />\n'+ins,1)
+              else:
+                  s=s.replace('<application',ins+'    <application',1)
+          open(man,'w').write(s)
+          st='android/app/src/main/res/values/strings.xml'
+          t=open(st).read()
+          if 'admob_app_id' not in t:
+              t=t.replace('</resources>','    <string name="admob_app_id">ca-app-pub-3940256099942544~3347511713</string>\n</resources>',1)
+              open(st,'w').write(t)
+          EOF
+      - name: Build debug APK
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: video-saver-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
