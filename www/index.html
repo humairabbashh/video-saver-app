@@ -227,14 +227,17 @@ async function tikwmResolve(url,hd){
  return{ok:0,err:'tikwm'};
 }
 async function probeSize(u){
- try{const r=await fetch(u,{method:'HEAD'});const l=r.headers.get('content-length');if(l&&+l>0)return +l;}catch(e){}
+ // HEAD: TikTok CDN rejects HEAD with 503 + a ~280-byte error page — never trust
+ // a HEAD content-length unless the request succeeded AND the value looks like
+ // real media (>50 KB). Otherwise fall through to the Range probe.
+ try{const r=await fetch(u,{method:'HEAD'});if(r.ok){const l=r.headers.get('content-length');if(l&&+l>50000)return +l;}}catch(e){}
  try{
   const c=new AbortController();const t=setTimeout(()=>c.abort(),4000);
   const r=await fetch(u,{method:'GET',headers:{Range:'bytes=0-0'},signal:c.signal});
   clearTimeout(t);
-  const cr=r.headers.get('content-range');
-  if(cr){const m=/\/(\d+)$/.exec(cr);if(m)return +m[1];}
-  const l=r.headers.get('content-length');if(l&&+l>0)return +l;
+  // Only the Content-Range total is the real size. content-length here is 1
+  // (the single byte 0-0) — never return it as the file size.
+  if(r.status===206){const cr=r.headers.get('content-range');if(cr){const m=/\/(\d+)$/.exec(cr);if(m&&+m[1]>50000)return +m[1];}}
  }catch(e){}
  return 0;
 }
@@ -266,14 +269,19 @@ async function resolveQuality(qid){
  const q=QUALS.find(x=>x.id===qid);if(!q||!cur)return null;
  if(qstate[qid]&&qstate[qid].st==='ok')return qstate[qid];
  setQ(qid,'busy');
- if(platform==='tiktok'){
+ if(platform==='tiktok'&&cur.raw){
   if(qid==='2k'||qid==='4k'){setQ(qid,'no');return null;} // TikTok videos max 1080p — never fake 2K/4K
   const d=cur.raw;let fu=null,fn=null;
   if(qid==='mp3'){fu=(typeof d.music==='string'&&d.music)||(d.music_info&&d.music_info.play)||null;fn=slug(d.title)+'.mp3';}
   else if(qid==='720'){fu=d.play;fn=slug(d.title)+'_720p.mp4';}
   else{fu=d.hdplay||d.play;fn=slug(d.title)+'_1080p.mp4';}
   if(!fu){setQ(qid,'no');return null;}
-  const sz=await probeSize(fu);
+  // TikWM gives the exact file size — use it, no probing needed.
+  let sz=0;
+  if(qid==='720'&&d.size>0)sz=d.size;
+  else if(qid!=='mp3'&&fu===d.hdplay&&d.hd_size>0)sz=d.hd_size;
+  else if(qid!=='mp3'&&fu===d.play&&d.size>0)sz=d.size;
+  else sz=await probeSize(fu);
   setQ(qid,'ok',sz,fu,fn);
   return qstate[qid];
  }
@@ -329,7 +337,10 @@ async function fetchVideo(){
   showPreview();
   $('qCard').style.display='block';
   qstate={};selQ='1080';renderQuals();
-  resolveQuality('1080');
+  // TikTok: har quality ki asli MB ek sath nikalo (TikWM sizes, koi extra call nahi).
+  // Cobalt platforms: sirf selected quality (rate-limit se bachne ke liye).
+  if(platform==='tiktok'&&cur.via==='tikwm'){['720','1080','mp3','max','2k','4k'].forEach(q=>resolveQuality(q));}
+  else resolveQuality('1080');
  }catch(err){
   card.classList.remove('show');
   if(err&&err.code==='yt-block')showMsg('err','<b>YouTube ne block kiya, thodi der baad dobara try karo.</b><br>Ya TikTok / Facebook ka link try karo — wo abhi chal raha hai.');
@@ -376,8 +387,8 @@ async function doSave(dl){
  const r=await saveFile(dl.fileUrl,dl.filename);
  $('dlprog').classList.remove('show');
  if(r.ok){
-  btn.disabled=false;btn.classList.add('ok');btn.innerHTML='✓ Saved to Downloads';
-  showMsg('ok','<b>Save ho gaya!</b> '+esc(dl.filename)+'<br>Files app → <b>Downloads</b> folder mein dekho.');
+  btn.disabled=false;btn.classList.add('ok');btn.innerHTML='✓ Saved in Gallery';
+  showMsg('ok','<b>✅ Your video saved in Gallery!</b><br>'+esc(dl.filename)+'<br>Gallery / Files app → Downloads mein dekho.');
   const ql=(QUALS.find(q=>q.id===dl.q)||{}).label||dl.q;
   addHist({title:cur.title||dl.filename,platform:platform,quality:ql,size:dl.size,time:Date.now()});
   setTimeout(()=>{btn.classList.remove('ok');updDlBtn();},5000);
